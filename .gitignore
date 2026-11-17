@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.streamlit/*
+!.streamlit/config.toml
+.DS_Store
+*.log
+generated/*.mid
+data/midi/*.mid
+data/midi/*.midi
+models/music_generator.keras
+models/history.json
