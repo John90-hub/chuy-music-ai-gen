@@ -1,4 +1,4 @@
-"""Streamlit interface for the AI Music Generator."""
+ """Streamlit interface for the AI Music Generator."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from audio import render_tokens_to_mp3
 from generator import generate_tokens, load_artifacts
-from preprocessing import extract_tokens, write_tokens_to_midi
+from preprocessing import extract_tokens
 
 MODEL_DIR = ROOT / "models"
 MIDI_DIR = ROOT / "data" / "midi"
@@ -57,8 +58,7 @@ st.markdown(
 st.markdown(
     '<div class="hero"><div class="kicker">AI MUSIC GENERATION STUDIO</div>'
     '<h1>AI Music <span>Generator</span></h1>'
-    '<p>Create original symbolic musical sequences with an LSTM neural network. '
-    'Choose a MIDI seed, tune the generation, and download the result to edit in your DAW.</p></div>',
+    '<p>Compose original music from a MIDI seed, preview it in your browser, and download the finished track as an MP3.</p></div>',
     unsafe_allow_html=True,
 )
 
@@ -66,10 +66,12 @@ if not MODEL_PATH.is_file():
     st.error("The trained model is missing. Run `python train.py --epochs 12` before starting Streamlit.")
     st.stop()
 
+
 @st.cache_resource(show_spinner=False)
 def get_artifacts():
     """Load the model and its vocabulary once for the Streamlit process."""
     return load_artifacts(MODEL_DIR)
+
 
 try:
     model, note_to_int, int_to_note, config = get_artifacts()
@@ -86,7 +88,7 @@ except Exception as exc:
 
 seed_options = sorted([*MIDI_DIR.glob("*.mid"), *MIDI_DIR.glob("*.midi")], key=lambda path: path.name.lower())
 if not seed_options:
-    st.warning(f"No MIDI seed files were found in `{MIDI_DIR.relative_to(ROOT)}`. Add a `.mid` or `.midi` file and restart the app.")
+    st.warning(f"No MIDI seed files were found in `{MIDI_DIR.relative_to(ROOT)}`. Add a `.mid` or `.midi` seed file to generate a track.")
     st.stop()
 
 with st.sidebar:
@@ -99,98 +101,92 @@ with st.sidebar:
     )
     length = st.slider("New notes to generate", min_value=50, max_value=300, value=100, step=10)
     temperature = st.slider(
-        "Creativity (temperature)",
-        min_value=0.5,
-        max_value=1.5,
-        value=0.8,
-        step=0.1,
+        "Creativity (temperature)", min_value=0.5, max_value=1.5, value=0.8, step=0.1,
         help="Lower values tend to be more predictable; higher values tend to be more varied.",
     )
-    use_fixed_seed = st.toggle("Make this run repeatable", value=False, help="Use the same random seed to reproduce a run with the same model and inputs.")
+    tempo = st.slider("Tempo (BPM)", min_value=60, max_value=180, value=110, step=5)
+    note_beats = st.select_slider("Note duration", options=[0.25, 0.5, 0.75, 1.0], value=0.5, format_func=lambda value: f"{value:g} beat")
+    timbre = st.selectbox("Synth sound", ["Warm", "Soft", "Bright"])
+    use_fixed_seed = st.toggle("Make this run repeatable", value=False)
     random_seed = st.number_input("Random seed", min_value=0, max_value=2_147_483_647, value=42, step=1, disabled=not use_fixed_seed)
-    st.caption("The model is loaded once and is not retrained during generation.")
+    st.caption("The model is cached. Generated tracks are synthesized directly to MP3.")
 
 left, right = st.columns([1.3, 0.7], gap="large")
 with left:
-    st.markdown("#### Create a new sequence")
+    st.markdown("#### Create a new track")
     st.markdown(
-        f'<div class="control-card"><b>Selected seed:</b> {seed_path.stem}<br>'
-        f'<b>Generation:</b> {length} new notes at temperature {temperature:.1f}. '
-        "Each composition is saved as a downloadable MIDI file.</div>",
+        f'<div class="control-card"><b>Seed:</b> {seed_path.stem}<br>'
+        f'<b>Arrangement:</b> {length} notes · {tempo} BPM · {timbre} synth.<br>'
+        "The generated audio is saved and delivered as an MP3 file.</div>",
         unsafe_allow_html=True,
     )
-    generate = st.button("♫  Generate Music", use_container_width=True, type="primary")
+    generate = st.button("♫  Generate MP3", use_container_width=True, type="primary")
 
     if generate:
         try:
-            with st.spinner("Composing a new sequence…"):
+            with st.spinner("Composing and rendering your MP3…"):
                 seed_tokens = extract_tokens(seed_path)
                 if not seed_tokens:
                     raise ValueError("The selected MIDI file did not contain readable note or chord events.")
                 rng = np.random.default_rng(int(random_seed)) if use_fixed_seed else None
                 generated_tokens = generate_tokens(
-                    model,
-                    seed_tokens,
-                    note_to_int,
-                    int_to_note,
-                    sequence_length,
-                    length,
-                    temperature,
-                    rng=rng,
+                    model, seed_tokens, note_to_int, int_to_note, sequence_length,
+                    length, temperature, rng=rng,
+                )
+                mp3_data = render_tokens_to_mp3(
+                    generated_tokens, tempo=tempo, beats_per_note=note_beats, timbre=timbre,
                 )
                 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-                filename = f"generated_music_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.mid"
-                output_path = write_tokens_to_midi(generated_tokens, GENERATED_DIR / filename)
+                filename = f"generated_music_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.mp3"
+                output_path = GENERATED_DIR / filename
+                output_path.write_bytes(mp3_data)
 
             st.session_state["generated_path"] = str(output_path)
             st.session_state["generated_count"] = len(generated_tokens)
             st.session_state["generated_temperature"] = temperature
             st.session_state["generated_seed_name"] = seed_path.stem
-            st.success("Generation completed successfully.")
+            st.session_state["generated_tempo"] = tempo
+            st.success("MP3 generated successfully.")
         except Exception as exc:
-            st.error(f"Generation failed: {exc}")
+            st.error(f"MP3 generation failed: {exc}")
 
     generated_path = st.session_state.get("generated_path")
     if generated_path:
         output_path = Path(generated_path)
         if output_path.is_file():
-            st.markdown("#### Your generated MIDI")
+            st.markdown("#### Your generated track")
+            st.audio(output_path.read_bytes(), format="audio/mpeg")
             metric_cols = st.columns(3)
             metric_cols[0].markdown(
-                f'<div class="metric-box"><strong>{st.session_state.get("generated_count", 0)}</strong><small>new notes</small></div>',
+                f'<div class="metric-box"><strong>{st.session_state.get("generated_count", 0)}</strong><small>notes generated</small></div>',
                 unsafe_allow_html=True,
             )
             metric_cols[1].markdown(
-                f'<div class="metric-box"><strong>{st.session_state.get("generated_temperature", 0.8):.1f}</strong><small>temperature</small></div>',
+                f'<div class="metric-box"><strong>{st.session_state.get("generated_temperature", 0.8):.1f}</strong><small>creativity</small></div>',
                 unsafe_allow_html=True,
             )
             metric_cols[2].markdown(
-                f'<div class="metric-box"><strong>.mid</strong><small>playable format</small></div>',
+                f'<div class="metric-box"><strong>{st.session_state.get("generated_tempo", 110)}</strong><small>BPM</small></div>',
                 unsafe_allow_html=True,
             )
             st.caption(f"Seed composition: {st.session_state.get('generated_seed_name', 'Unknown')}")
             st.download_button(
-                "Download MIDI",
-                data=output_path.read_bytes(),
-                file_name=output_path.name,
-                mime="audio/midi",
-                use_container_width=True,
+                "Download MP3", data=output_path.read_bytes(), file_name=output_path.name,
+                mime="audio/mpeg", use_container_width=True,
             )
         else:
-            st.info("The previous generated file is no longer available. Generate a new composition to continue.")
+            st.info("The previous generated track is no longer available. Generate a new composition to continue.")
             st.session_state.pop("generated_path", None)
 
 with right:
     st.markdown("#### Model snapshot")
     st.markdown(
         f'<div class="status"><b>LSTM model ready</b><br>{vocab_size:,} musical tokens'
-        f'<br>Context window: {sequence_length} tokens<br>Available seeds: {len(seed_options)}</div>',
+        f'<br>Context window: {sequence_length} tokens<br>Available seed files: {len(seed_options)}</div>',
         unsafe_allow_html=True,
     )
     st.markdown("\n")
-    st.markdown("**Temperature guide**")
-    st.markdown("Lower settings generally create more predictable continuations. Higher settings can produce more surprising ideas, but may be less coherent.")
-    st.markdown("**Reproducible runs**")
-    st.markdown("Enable the fixed random seed in the sidebar to repeat a generation with the same seed file and settings.")
-    st.markdown("**Output**")
-    st.markdown("MIDI is editable and playable in MIDI-compatible music software.")
+    st.markdown("**MP3 audio**")
+    st.markdown("Generated notes and chords are rendered into a synthesized audio track, playable here and downloadable as MP3.")
+    st.markdown("**Creative controls**")
+    st.markdown("Adjust sampling temperature, tempo, note duration, and synth timbre. Enable a fixed seed to reproduce the same sampled note sequence.")
