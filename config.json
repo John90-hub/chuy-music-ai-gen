@@ -1,0 +1,11 @@
+{
+  "sequence_length": 32,
+  "vocab_size": 241,
+  "epochs_requested": 4,
+  "batch_size": 16,
+  "seed": 42,
+  "dataset_directory": "data/midi",
+  "token_count": 3634,
+  "training_sequences": 3241,
+  "validation_sequences": 361
+}
